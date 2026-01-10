@@ -1,0 +1,2 @@
+# inventario
+Inventario Placa Lista 
