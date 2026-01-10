@@ -1,0 +1,160 @@
+const { GoogleSpreadsheet } = require('google-spreadsheet');
+const axios = require('axios');
+
+// CONFIGURACIÓN (Vienen de las variables de entorno de Vercel)
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
+// El private key a veces da problemas con los saltos de línea al pasarlo por variables, esto lo arregla:
+const PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+
+module.exports = async (req, res) => {
+  // 1. VERIFICACIÓN DE META (Solo ocurre cuando configuras el webhook por primera vez)
+  if (req.method === 'GET') {
+    if (req.query['hub.verify_token'] === 'tribu_token_seguro') {
+      return res.status(200).send(req.query['hub.challenge']);
+    }
+    return res.status(403).send('Error de token');
+  }
+
+  // 2. RECEPCIÓN DE MENSAJES (POST)
+  if (req.method === 'POST') {
+    try {
+      const body = req.body;
+      
+      // Verificamos si es un mensaje de texto válido
+      if (!body.entry || !body.entry[0].changes || !body.entry[0].changes[0].value.messages) {
+        return res.status(200).send('No es un mensaje procesable');
+      }
+
+      const messageObj = body.entry[0].changes[0].value.messages[0];
+      const from = messageObj.from; // Número del remitente
+      const text = messageObj.text.body.trim(); // El mensaje: "A10 50"
+
+      await procesarMensaje(from, text);
+      return res.status(200).send('EVENT_RECEIVED');
+
+    } catch (error) {
+      console.error(error);
+      return res.status(500).send('Error interno');
+    }
+  }
+};
+
+// FUNCIÓN PRINCIPAL DE LÓGICA
+async function procesarMensaje(telefono, mensaje) {
+  // Conexión a Google Sheets
+  const doc = new GoogleSpreadsheet(SHEET_ID);
+  await doc.useServiceAccountAuth({
+    client_email: CLIENT_EMAIL,
+    private_key: PRIVATE_KEY,
+  });
+  await doc.loadInfo();
+
+  const hojaInventario = doc.sheetsByTitle['Inventario'];
+  const hojaMovimientos = doc.sheetsByTitle['Movimientos'];
+  
+  // Vamos a traer todas las filas para buscar referencias
+  const filas = await hojaInventario.getRows();
+
+  // EXPRESIONES REGULARES (Para entender qué escribe el humano)
+  // Caso 1: Entrada simple -> "A10 50" (Referencia Cantidad)
+  const regexEntrada = /^([A-Za-z0-9]+)\s+(\d+)$/;
+  
+  // Caso 2: Salida -> "Salida A10 20 Edificio Norte"
+  const regexSalida = /^Salida\s+([A-Za-z0-9]+)\s+(\d+)\s+(.+)$/i;
+
+  let respuesta = "";
+
+  if (mensaje.match(regexEntrada)) {
+    // ES UNA ENTRADA (PRODUCCIÓN)
+    const match = mensaje.match(regexEntrada);
+    const ref = match[1].toUpperCase();
+    const cant = parseInt(match[2]);
+
+    // Buscar si la referencia existe
+    const filaEncontrada = filas.find(row => row.A1 === ref || row['A1 (Referencia)'] === ref || row._rawData[0] === ref);
+
+    if (filaEncontrada) {
+      const saldoActual = parseInt(filaEncontrada.B1 || filaEncontrada._rawData[1] || 0); // Ajuste según nombre columna
+      // Nota: google-spreadsheet usa nombres de cabecera como keys. 
+      // Si la cabecera es "A1 (Referencia)", usamos esa key. 
+      // Para asegurar, vamos a asumir que usaste la cabecera exacta "Referencia" y "Cantidad"
+      // Si usaste "A1 (Referencia)", cambiaremos la lógica abajo.
+      
+      // Actualizamos Saldo (Suponiendo cabeceras "Referencia" y "Cantidad")
+      // Si usaste A1/B1 en la fila 1, la librería las toma como headers.
+      // Vamos a asumir headers simples: "Referencia" y "Cantidad"
+      
+      const nuevoSaldo = saldoActual + cant;
+      filaEncontrada.Cantidad = nuevoSaldo; 
+      await filaEncontrada.save();
+
+      // Guardar en log
+      await hojaMovimientos.addRow({
+        'Fecha': new Date().toLocaleString('es-CO'),
+        'Accion': 'Entrada',
+        'Referencia': ref,
+        'Cantidad': cant,
+        'Nota': 'Producción'
+      });
+
+      respuesta = `✅ *ENTRADA REGISTRADA*\nRef: ${ref}\nCant: +${cant}\nNuevo Saldo: ${nuevoSaldo}`;
+    } else {
+      respuesta = `❌ Error: La referencia ${ref} no existe en la hoja Inventario. Créala primero.`;
+    }
+
+  } else if (mensaje.match(regexSalida)) {
+    // ES UNA SALIDA
+    const match = mensaje.match(regexSalida);
+    const ref = match[1].toUpperCase();
+    const cant = parseInt(match[2]);
+    const obra = match[3];
+
+    const filaEncontrada = filas.find(row => row.Referencia === ref); // Asumiendo header "Referencia"
+
+    if (filaEncontrada) {
+      const saldoActual = parseInt(filaEncontrada.Cantidad);
+      if (saldoActual < cant) {
+        respuesta = `⚠️ *ALERTA*: No hay suficiente inventario.\nTienes: ${saldoActual}\nIntentas sacar: ${cant}`;
+      } else {
+        const nuevoSaldo = saldoActual - cant;
+        filaEncontrada.Cantidad = nuevoSaldo;
+        await filaEncontrada.save();
+
+        await hojaMovimientos.addRow({
+          'Fecha': new Date().toLocaleString('es-CO'),
+          'Accion': 'Salida',
+          'Referencia': ref,
+          'Cantidad': cant,
+          'Nota': obra
+        });
+
+        respuesta = `🚚 *SALIDA REGISTRADA*\nDestino: ${obra}\nRef: ${ref}\nCant: -${cant}\nQuedan: ${nuevoSaldo}`;
+      }
+    } else {
+      respuesta = `❌ Error: Referencia ${ref} no encontrada.`;
+    }
+
+  } else {
+    respuesta = "🤖 *Comandos:*\n1. Entrada: `A10 50`\n2. Salida: `Salida A10 20 Obra1`";
+  }
+
+  // ENVIAR RESPUESTA A WHATSAPP
+  await enviarWhatsApp(telefono, respuesta);
+}
+
+async function enviarWhatsApp(telefono, texto) {
+  const url = `https://graph.facebook.com/v17.0/${process.env.WHATSAPP_PHONE_ID}/messages`;
+  await axios.post(url, {
+    messaging_product: "whatsapp",
+    to: telefono,
+    type: "text",
+    text: { body: texto }
+  }, {
+    headers: {
+      'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  });
+}
