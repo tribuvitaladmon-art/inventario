@@ -1,9 +1,9 @@
 {
   "name": "inventario-bot",
   "version": "1.0.0",
-  "main": "api/webhook.js",
   "dependencies": {
     "google-spreadsheet": "^3.3.0",
     "axios": "^1.6.0"
   }
 }
+
