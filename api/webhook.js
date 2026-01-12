@@ -1,14 +1,15 @@
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const axios = require('axios');
 
-// CONFIGURACIÓN
+// CONFIGURACIÓN DE VARIABLES
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
+// Corrección crítica para la llave privada en Vercel
 const PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 
 module.exports = async (req, res) => {
-  // 1. VERIFICACIÓN DE META (GET)
+  // 1. VERIFICACIÓN DE META (Para cuando Meta te desbloquee)
   if (req.method === 'GET') {
     if (req.query['hub.verify_token'] === 'tribu_token_seguro') {
       return res.status(200).send(req.query['hub.challenge']);
@@ -21,31 +22,36 @@ module.exports = async (req, res) => {
     try {
       const body = req.body;
       
-      // Verificación de seguridad básica de la estructura del JSON
+      // Verificamos si viene la estructura correcta de WhatsApp
       if (!body.entry || !body.entry[0].changes || !body.entry[0].changes[0].value.messages) {
-        return res.status(200).send('No es un mensaje procesable');
+        return res.status(200).send('No es un mensaje de WhatsApp válido');
       }
 
       const messageObj = body.entry[0].changes[0].value.messages[0];
       const from = messageObj.from; 
       const text = messageObj.text.body.trim(); 
 
-      console.log(`📩 Mensaje recibido de ${from}: ${text}`); // Log en Vercel
+      console.log(`📩 MENSAJE RECIBIDO de ${from}: ${text}`); // ESTO SALDRÁ EN LOS LOGS
 
+      // Procesamos la lógica (Excel)
       await procesarMensaje(from, text);
+      
+      // Respondemos ÉXITO a Meta (o a tu consola)
       return res.status(200).send('EVENT_RECEIVED');
 
     } catch (error) {
-      console.error("🔥 Error Fatal:", error);
-      // Respondemos 200 aunque falle para que WhatsApp no reintente infinitamente
+      // AQUÍ ESTÁ EL LOG DE FUEGO QUE BUSCAMOS
+      console.error("🔥 Error Fatal en el Webhook:", error);
+      // Respondemos 200 para no bloquear, pero registramos el error
       return res.status(200).send('EVENT_RECEIVED_WITH_ERROR');
     }
   }
 };
 
-// FUNCIÓN PRINCIPAL DE LÓGICA
+// --- LÓGICA DEL NEGOCIO ---
 async function procesarMensaje(telefono, mensaje) {
   try {
+    // 1. Conexión a Google Sheets
     const doc = new GoogleSpreadsheet(SHEET_ID);
     await doc.useServiceAccountAuth({
         client_email: CLIENT_EMAIL,
@@ -53,50 +59,58 @@ async function procesarMensaje(telefono, mensaje) {
     });
     await doc.loadInfo();
 
+    // 2. Seleccionar las pestañas
     const hojaInventario = doc.sheetsByTitle['Inventario'];
     const hojaMovimientos = doc.sheetsByTitle['Movimientos'];
+
+    if (!hojaInventario || !hojaMovimientos) {
+        throw new Error("No encuentro las pestañas 'Inventario' o 'Movimientos'. Revisa los nombres en Excel.");
+    }
     
     const filas = await hojaInventario.getRows();
 
-    // REGEX
-    const regexEntrada = /^([A-Za-z0-9]+)\s+(\d+)$/; 
-    const regexSalida = /^Salida\s+([A-Za-z0-9]+)\s+(\d+)\s+(.+)$/i;
+    // 3. Expresiones Regulares (Entender el texto)
+    const regexEntrada = /^([A-Za-z0-9]+)\s+(\d+)$/;  // Ejemplo: A10 50
+    const regexSalida = /^Salida\s+([A-Za-z0-9]+)\s+(\d+)\s+(.+)$/i; // Ejemplo: Salida A10 20 Obra
 
     let respuesta = "";
 
-    // --- LÓGICA DE ENTRADA ---
+    // --- CASO 1: ENTRADA DE INVENTARIO ---
     if (mensaje.match(regexEntrada)) {
         const match = mensaje.match(regexEntrada);
-        const ref = match[1].toUpperCase();
-        const cant = parseInt(match[2]);
+        const ref = match[1].toUpperCase(); // La Referencia (A10)
+        const cant = parseInt(match[2]);    // La Cantidad (50)
 
-        // Buscamos usando el nombre de la columna "Referencia"
-        // Asegúrate que en A1 pusiste "Referencia"
+        // Buscar en la columna "Referencia"
         const filaEncontrada = filas.find(row => row.Referencia === ref);
 
         if (filaEncontrada) {
             const saldoActual = parseInt(filaEncontrada.Cantidad || 0);
             const nuevoSaldo = saldoActual + cant;
             
+            // Guardar en Inventario
             filaEncontrada.Cantidad = nuevoSaldo; 
             await filaEncontrada.save();
 
+            // Guardar en Movimientos
             await hojaMovimientos.addRow({
                 'Fecha': new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' }),
                 'Accion': 'Entrada',
                 'Referencia': ref,
                 'Cantidad': cant,
-                'Nota': 'Producción'
+                'Nota': 'Producción (WhatsApp)'
             });
-            console.log(`✅ Inventario actualizado: ${ref} ahora tiene ${nuevoSaldo}`);
-            respuesta = `✅ *ENTRADA REGISTRADA* Ref: ${ref} Nuevo Saldo: ${nuevoSaldo}`;
+            
+            console.log(`✅ ÉXITO: Se sumaron ${cant} a ${ref}. Nuevo saldo: ${nuevoSaldo}`);
+            respuesta = `✅ Entrada: ${ref} (+${cant}). Nuevo Saldo: ${nuevoSaldo}`;
         } else {
-            console.log(`❌ Referencia no encontrada: ${ref}`);
+            console.warn(`⚠️ ALERTA: La referencia ${ref} no existe en la hoja.`);
             respuesta = `❌ Error: La referencia ${ref} no existe.`;
         }
 
-    // --- LÓGICA DE SALIDA ---
+    // --- CASO 2: SALIDA A OBRA ---
     } else if (mensaje.match(regexSalida)) {
+        // ... (Lógica de salida, similar a la anterior)
         const match = mensaje.match(regexSalida);
         const ref = match[1].toUpperCase();
         const cant = parseInt(match[2]);
@@ -106,44 +120,36 @@ async function procesarMensaje(telefono, mensaje) {
 
         if (filaEncontrada) {
             const saldoActual = parseInt(filaEncontrada.Cantidad || 0);
-            if (saldoActual < cant) {
-                respuesta = `⚠️ Sin stock suficiente. Tienes: ${saldoActual}`;
-            } else {
-                const nuevoSaldo = saldoActual - cant;
-                filaEncontrada.Cantidad = nuevoSaldo;
-                await filaEncontrada.save();
+             const nuevoSaldo = saldoActual - cant;
+             filaEncontrada.Cantidad = nuevoSaldo;
+             await filaEncontrada.save();
 
-                await hojaMovimientos.addRow({
-                    'Fecha': new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' }),
-                    'Accion': 'Salida',
-                    'Referencia': ref,
-                    'Cantidad': cant,
-                    'Nota': obra
-                });
-                respuesta = `🚚 *SALIDA REGISTRADA* Destino: ${obra} Quedan: ${nuevoSaldo}`;
-            }
+             await hojaMovimientos.addRow({
+                'Fecha': new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' }),
+                'Accion': 'Salida',
+                'Referencia': ref,
+                'Cantidad': cant,
+                'Nota': obra
+            });
+            respuesta = `🚚 Salida: ${ref} (-${cant}) para ${obra}. Quedan: ${nuevoSaldo}`;
         } else {
-            respuesta = `❌ Error: Referencia ${ref} no encontrada.`;
+            respuesta = `❌ Error: La referencia ${ref} no existe.`;
         }
     } else {
-        respuesta = "🤖 Comandos: 'A10 50' o 'Salida A10 20 Obra'";
+        respuesta = "🤖 No entendí. Escribe 'A10 50' o 'Salida A10 20 Obra'";
     }
 
-    // INTENTO DE ENVIAR WHATSAPP (Protegido para que no tumbe el servidor)
-    try {
-        if (process.env.WHATSAPP_TOKEN === 'PENDIENTE') {
-            console.log("⚠️ Modo Prueba: No se envía WhatsApp porque el token es PENDIENTE.");
-            console.log("🤖 El bot hubiera respondido:", respuesta);
-        } else {
-            await enviarWhatsApp(telefono, respuesta);
-        }
-    } catch (wsError) {
-        console.error("Error enviando WhatsApp (No crítico):", wsError.message);
+    // 4. ENVÍO DE RESPUESTA (Con protección para pruebas)
+    if (!WHATSAPP_TOKEN || WHATSAPP_TOKEN === 'PENDIENTE') {
+        console.log("🟡 MODO PRUEBA (Sin Token): El bot hubiera respondido ->", respuesta);
+    } else {
+        await enviarWhatsApp(telefono, respuesta);
     }
 
   } catch (error) {
-    console.error("❌ Error en procesarMensaje:", error);
-    throw error; // Este sí es crítico
+    // Si falla la conexión a Google o algo interno
+    console.error("🔥 ERROR EN PROCESAR MENSAJE:", error);
+    throw error; // Lanzamos el error para que salga en el log principal
   }
 }
 
@@ -156,7 +162,7 @@ async function enviarWhatsApp(telefono, texto) {
     text: { body: texto }
   }, {
     headers: {
-      'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+      'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
       'Content-Type': 'application/json'
     }
   });
