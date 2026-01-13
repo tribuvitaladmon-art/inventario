@@ -22,7 +22,7 @@ module.exports = async (req, res) => {
       const from = messageObj.from; 
       const text = messageObj.text.body.trim(); 
 
-      console.log(`📩 MENSAJE: ${text}`); 
+      console.log(`📩 MENSAJE de ${from}: ${text}`); 
       await procesarMensaje(from, text);
       return res.status(200).send('EVENT_RECEIVED');
 
@@ -41,47 +41,56 @@ async function procesarMensaje(telefono, mensaje) {
 
     const hojaInventario = doc.sheetsByTitle['Inventario'];
     const hojaMovimientos = doc.sheetsByTitle['Movimientos'];
-    const filas = await hojaInventario.getRows();
+    const filasInventario = await hojaInventario.getRows();
 
-    // REGEX 1: Operaciones (A85 50...)
+    // REGEX
     const regexOperacion = /^([A-Za-z0-9]+)\s+(-?\d+)(?:\s+(.+))?$/;
     
-    // REGEX 2: Consulta Total (NUEVO) - Detecta "Inventario total" o "Reporte"
-    const regexConsulta = /^(inventario total|reporte|saldo)$/i;
-
     let respuesta = "";
 
-    // --- CASO 1: CONSULTAR INVENTARIO TOTAL ---
-    if (mensaje.match(regexConsulta)) {
-        let reporte = "📦 *REPORTE DE INVENTARIO*\n------------------\n";
+    // --- CASO 1: REPORTE DE INVENTARIO TOTAL ---
+    if (mensaje.match(/^(inventario total|reporte|saldo)$/i)) {
+        let reporte = "📦 *INVENTARIO ACTUAL*\n------------------\n";
         let totalItems = 0;
-
-        // Recorremos todas las filas para armar la lista
-        filas.forEach(fila => {
-            const ref = fila.Referencia;
-            const cant = fila.Cantidad;
-
-            // Solo mostramos si hay una Referencia escrita (para ignorar filas vacías)
-            if (ref) {
-                reporte += `🔹 *${ref}*: ${cant || 0}\n`;
+        filasInventario.forEach(fila => {
+            if (fila.Referencia) {
+                reporte += `🔹 *${fila.Referencia}*: ${fila.Cantidad || 0}\n`;
                 totalItems++;
             }
         });
+        respuesta = totalItems === 0 ? "📭 El inventario está vacío." : reporte;
 
-        if (totalItems === 0) {
-            respuesta = "📭 El inventario está vacío.";
+    // --- CASO 2: CONSULTAR ÚLTIMOS MOVIMIENTOS (NUEVO) ---
+    } else if (mensaje.match(/^movimientos$/i)) {
+        const filasMov = await hojaMovimientos.getRows();
+        const total = filasMov.length;
+        
+        if (total === 0) {
+            respuesta = "📭 No hay movimientos registrados aún.";
         } else {
-            respuesta = reporte + "\n📅 _Actualizado al momento_";
+            // Tomamos los últimos 20 (o menos si no hay tantos)
+            // .slice(-20) toma los últimos 20. .reverse() los pone del más nuevo al más viejo
+            const ultimos = filasMov.slice(-20).reverse(); 
+            
+            respuesta = "📋 *ÚLTIMOS 20 MOVIMIENTOS*\n(Del más reciente al más antiguo)\n------------------\n";
+            
+            ultimos.forEach(row => {
+                // Formato: [Fecha] Ref: Cant (Nota)
+                // Cortamos la fecha para que no ocupe tanto espacio
+                const fechaCorta = row.Fecha ? row.Fecha.split(',')[0] : 'Hoy';
+                const signo = parseInt(row.Cantidad) > 0 ? '+' : '';
+                respuesta += `🗓️ ${fechaCorta} | *${row.Referencia}*: ${signo}${row.Cantidad}\n👤 ${row.Nota} (Tel: ${row.Telefono || '?'})\n\n`;
+            });
         }
 
-    // --- CASO 2: AGREGAR O QUITAR ITEMS ---
+    // --- CASO 3: REGISTRAR ENTRADA/SALIDA ---
     } else if (mensaje.match(regexOperacion)) {
         const match = mensaje.match(regexOperacion);
         const ref = match[1].toUpperCase();     
         const cant = parseInt(match[2]);        
         const nota = match[3] || "Sin observaciones"; 
 
-        const filaEncontrada = filas.find(row => row.Referencia === ref);
+        const filaEncontrada = filasInventario.find(row => row.Referencia === ref);
 
         if (filaEncontrada) {
             const saldoActual = parseInt(filaEncontrada.Cantidad || 0);
@@ -95,12 +104,14 @@ async function procesarMensaje(telefono, mensaje) {
 
                 const tipoAccion = cant >= 0 ? 'Entrada / Producción' : 'Salida / Entrega';
                 
+                // GUARDAMOS EL MOVIMIENTO CON EL TELÉFONO
                 await hojaMovimientos.addRow({
                     'Fecha': new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' }),
                     'Accion': tipoAccion,
                     'Referencia': ref,
                     'Cantidad': cant,
-                    'Nota': nota 
+                    'Nota': nota,
+                    'Telefono': telefono // <--- AQUÍ GUARDAMOS EL NÚMERO
                 });
 
                 if (cant > 0) {
@@ -110,15 +121,13 @@ async function procesarMensaje(telefono, mensaje) {
                 }
             }
         } else {
-            respuesta = `❌ La referencia ${ref} no existe en el Excel.`;
+            respuesta = `❌ La referencia ${ref} no existe.`;
         }
 
-    // --- CASO 3: MENSAJE NO ENTENDIDO ---
     } else {
-        respuesta = "🤖 *Menú del Bot:*\n\n1️⃣ Sumar: `A85 50 Jhon`\n2️⃣ Restar: `A85 -20 Obra`\n3️⃣ Ver todo: `Inventario total`";
+        respuesta = "🤖 *Menú del Bot:*\n\n1️⃣ Operar: `A85 50 Jhon`\n2️⃣ Ver todo: `Inventario total`\n3️⃣ Historial: `Movimientos`";
     }
 
-    // ENVÍO
     if (!WHATSAPP_TOKEN || WHATSAPP_TOKEN === 'PENDIENTE') {
         console.log("🟡 BOT RESPONDE:", respuesta);
     } else {
@@ -140,4 +149,3 @@ async function enviarWhatsApp(telefono, texto) {
     text: { body: texto }
   }, { headers: { 'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } });
 }
-
