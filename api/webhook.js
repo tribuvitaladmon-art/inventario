@@ -60,7 +60,7 @@ async function procesarMensaje(telefono, mensaje) {
         });
         respuesta = totalItems === 0 ? "📭 El inventario está vacío." : reporte;
 
-    // --- CASO 2: CONSULTAR ÚLTIMOS MOVIMIENTOS (NUEVO) ---
+    // --- CASO 2: CONSULTAR ÚLTIMOS MOVIMIENTOS ---
     } else if (mensaje.match(/^movimientos$/i)) {
         const filasMov = await hojaMovimientos.getRows();
         const total = filasMov.length;
@@ -68,15 +68,9 @@ async function procesarMensaje(telefono, mensaje) {
         if (total === 0) {
             respuesta = "📭 No hay movimientos registrados aún.";
         } else {
-            // Tomamos los últimos 20 (o menos si no hay tantos)
-            // .slice(-20) toma los últimos 20. .reverse() los pone del más nuevo al más viejo
             const ultimos = filasMov.slice(-20).reverse(); 
-            
-            respuesta = "📋 *ÚLTIMOS 20 MOVIMIENTOS*\n(Del más reciente al más antiguo)\n------------------\n";
-            
+            respuesta = "📋 *ÚLTIMOS 20 MOVIMIENTOS*\n------------------\n";
             ultimos.forEach(row => {
-                // Formato: [Fecha] Ref: Cant (Nota)
-                // Cortamos la fecha para que no ocupe tanto espacio
                 const fechaCorta = row.Fecha ? row.Fecha.split(',')[0] : 'Hoy';
                 const signo = parseInt(row.Cantidad) > 0 ? '+' : '';
                 respuesta += `🗓️ ${fechaCorta} | *${row.Referencia}*: ${signo}${row.Cantidad}\n👤 ${row.Nota} (Tel: ${row.Telefono || '?'})\n\n`;
@@ -90,7 +84,11 @@ async function procesarMensaje(telefono, mensaje) {
         const cant = parseInt(match[2]);        
         const nota = match[3] || "Sin observaciones"; 
 
-        const filaEncontrada = filasInventario.find(row => row.Referencia === ref);
+        // --- CORRECCIÓN AQUÍ: BÚSQUEDA ROBUSTA ---
+        // Comparamos convirtiendo ambos lados a mayúsculas y borrando espacios
+        const filaEncontrada = filasInventario.find(row => 
+            row.Referencia && row.Referencia.toString().trim().toUpperCase() === ref
+        );
 
         if (filaEncontrada) {
             const saldoActual = parseInt(filaEncontrada.Cantidad || 0);
@@ -104,14 +102,13 @@ async function procesarMensaje(telefono, mensaje) {
 
                 const tipoAccion = cant >= 0 ? 'Entrada / Producción' : 'Salida / Entrega';
                 
-                // GUARDAMOS EL MOVIMIENTO CON EL TELÉFONO
                 await hojaMovimientos.addRow({
                     'Fecha': new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' }),
                     'Accion': tipoAccion,
                     'Referencia': ref,
                     'Cantidad': cant,
                     'Nota': nota,
-                    'Telefono': telefono // <--- AQUÍ GUARDAMOS EL NÚMERO
+                    'Telefono': telefono 
                 });
 
                 if (cant > 0) {
