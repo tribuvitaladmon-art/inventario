@@ -43,33 +43,56 @@ async function procesarMensaje(telefono, mensaje) {
     const hojaMovimientos = doc.sheetsByTitle['Movimientos'];
     const filas = await hojaInventario.getRows();
 
-    // --- NUEVA REGLA MAESTRA ---
-    // Busca: Referencia + Espacio + Numero (con o sin menos) + Espacio + Texto (Opcional)
-    const regex = /^([A-Za-z0-9]+)\s+(-?\d+)(?:\s+(.+))?$/;
+    // REGEX 1: Operaciones (A85 50...)
+    const regexOperacion = /^([A-Za-z0-9]+)\s+(-?\d+)(?:\s+(.+))?$/;
+    
+    // REGEX 2: Consulta Total (NUEVO) - Detecta "Inventario total" o "Reporte"
+    const regexConsulta = /^(inventario total|reporte|saldo)$/i;
 
     let respuesta = "";
 
-    if (mensaje.match(regex)) {
-        const match = mensaje.match(regex);
-        const ref = match[1].toUpperCase();     // Ej: A85
-        const cant = parseInt(match[2]);        // Ej: 50 o -80
-        const nota = match[3] || "Sin observaciones"; // Ej: "Jhon, Alfredo" o "Obra Funeque"
+    // --- CASO 1: CONSULTAR INVENTARIO TOTAL ---
+    if (mensaje.match(regexConsulta)) {
+        let reporte = "📦 *REPORTE DE INVENTARIO*\n------------------\n";
+        let totalItems = 0;
+
+        // Recorremos todas las filas para armar la lista
+        filas.forEach(fila => {
+            const ref = fila.Referencia;
+            const cant = fila.Cantidad;
+
+            // Solo mostramos si hay una Referencia escrita (para ignorar filas vacías)
+            if (ref) {
+                reporte += `🔹 *${ref}*: ${cant || 0}\n`;
+                totalItems++;
+            }
+        });
+
+        if (totalItems === 0) {
+            respuesta = "📭 El inventario está vacío.";
+        } else {
+            respuesta = reporte + "\n📅 _Actualizado al momento_";
+        }
+
+    // --- CASO 2: AGREGAR O QUITAR ITEMS ---
+    } else if (mensaje.match(regexOperacion)) {
+        const match = mensaje.match(regexOperacion);
+        const ref = match[1].toUpperCase();     
+        const cant = parseInt(match[2]);        
+        const nota = match[3] || "Sin observaciones"; 
 
         const filaEncontrada = filas.find(row => row.Referencia === ref);
 
         if (filaEncontrada) {
             const saldoActual = parseInt(filaEncontrada.Cantidad || 0);
             
-            // VALIDAR SI ALCANZA EL INVENTARIO (Solo si es resta)
             if (cant < 0 && (saldoActual + cant) < 0) {
                 respuesta = `⚠️ *ERROR DE STOCK*\nRef: ${ref}\nHay: ${saldoActual}\nIntentas sacar: ${Math.abs(cant)}`;
             } else {
-                // ACTUALIZAR INVENTARIO
                 const nuevoSaldo = saldoActual + cant;
                 filaEncontrada.Cantidad = nuevoSaldo;
                 await filaEncontrada.save();
 
-                // GUARDAR EN MOVIMIENTOS
                 const tipoAccion = cant >= 0 ? 'Entrada / Producción' : 'Salida / Entrega';
                 
                 await hojaMovimientos.addRow({
@@ -80,7 +103,6 @@ async function procesarMensaje(telefono, mensaje) {
                     'Nota': nota 
                 });
 
-                // RESPUESTA
                 if (cant > 0) {
                     respuesta = `✅ *PRODUCCIÓN*\nRef: ${ref}\nCant: +${cant}\nPersonal: ${nota}\n💰 Saldo: ${nuevoSaldo}`;
                 } else {
@@ -88,12 +110,15 @@ async function procesarMensaje(telefono, mensaje) {
                 }
             }
         } else {
-            respuesta = `❌ La referencia ${ref} no existe.`;
+            respuesta = `❌ La referencia ${ref} no existe en el Excel.`;
         }
+
+    // --- CASO 3: MENSAJE NO ENTENDIDO ---
     } else {
-        respuesta = "🤖 Usa: `A85 50 Nombres` o `A85 -80 Obra`";
+        respuesta = "🤖 *Menú del Bot:*\n\n1️⃣ Sumar: `A85 50 Jhon`\n2️⃣ Restar: `A85 -20 Obra`\n3️⃣ Ver todo: `Inventario total`";
     }
 
+    // ENVÍO
     if (!WHATSAPP_TOKEN || WHATSAPP_TOKEN === 'PENDIENTE') {
         console.log("🟡 BOT RESPONDE:", respuesta);
     } else {
@@ -115,3 +140,4 @@ async function enviarWhatsApp(telefono, texto) {
     text: { body: texto }
   }, { headers: { 'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } });
 }
+
