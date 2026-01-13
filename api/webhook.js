@@ -112,9 +112,9 @@ async function procesarMensaje(telefono, mensaje) {
                 });
 
                 if (cant > 0) {
-                    respuesta = `✅ *PRODUCCIÓN*\nRef: ${ref}\nCant: +${cant}\nPersonal: ${nota}\n💰 Saldo: ${nuevoSaldo}`;
+                    respuesta = `✅ *PRODUCCIÓN*\nRef: ${ref}\nCant: +${cant}\nPersonal: ${nota}\n💰 Cantidad: ${nuevoSaldo}`;
                 } else {
-                    respuesta = `🚚 *ENTREGA*\nRef: ${ref}\nCant: ${cant}\nDestino: ${nota}\n📉 Saldo: ${nuevoSaldo}`;
+                    respuesta = `🚚 *ENTREGA*\nRef: ${ref}\nCant: ${cant}\nDestino: ${nota}\n📉 Cantidad: ${nuevoSaldo}`;
                 }
             }
         } else {
@@ -146,3 +146,4 @@ async function enviarWhatsApp(telefono, texto) {
     text: { body: texto }
   }, { headers: { 'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } });
 }
+
