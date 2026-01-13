@@ -43,8 +43,11 @@ async function procesarMensaje(telefono, mensaje) {
     const hojaMovimientos = doc.sheetsByTitle['Movimientos'];
     const filasInventario = await hojaInventario.getRows();
 
-    // REGEX
-    const regexOperacion = /^([A-Za-z0-9]+)\s+(-?\d+)(?:\s+(.+))?$/;
+    // --- REGEX UNIVERSAL (CAMBIO CLAVE) ---
+    // ^(\S+)  -> Captura CUALQUIER texto que NO sea espacio (incluye Ñ, tildes, símbolos)
+    // \s+     -> Un espacio obligatorio
+    // (-?\d+) -> El número (positivo o negativo)
+    const regexOperacion = /^(\S+)\s+(-?\d+)(?:\s+(.+))?$/;
     
     let respuesta = "";
 
@@ -84,8 +87,7 @@ async function procesarMensaje(telefono, mensaje) {
         const cant = parseInt(match[2]);        
         const nota = match[3] || "Sin observaciones"; 
 
-        // --- CORRECCIÓN AQUÍ: BÚSQUEDA ROBUSTA ---
-        // Comparamos convirtiendo ambos lados a mayúsculas y borrando espacios
+        // Búsqueda inteligente (Ñ, Tildes, Espacios invisibles)
         const filaEncontrada = filasInventario.find(row => 
             row.Referencia && row.Referencia.toString().trim().toUpperCase() === ref
         );
@@ -112,9 +114,9 @@ async function procesarMensaje(telefono, mensaje) {
                 });
 
                 if (cant > 0) {
-                    respuesta = `✅ *PRODUCCIÓN*\nRef: ${ref}\nCant: +${cant}\nPersonal: ${nota}\n💰 Cantidad: ${nuevoSaldo}`;
+                    respuesta = `✅ *PRODUCCIÓN*\nRef: ${ref}\nCant: +${cant}\nPersonal: ${nota}\n💰 Saldo: ${nuevoSaldo}`;
                 } else {
-                    respuesta = `🚚 *ENTREGA*\nRef: ${ref}\nCant: ${cant}\nDestino: ${nota}\n📉 Cantidad: ${nuevoSaldo}`;
+                    respuesta = `🚚 *ENTREGA*\nRef: ${ref}\nCant: ${cant}\nDestino: ${nota}\n📉 Saldo: ${nuevoSaldo}`;
                 }
             }
         } else {
@@ -122,7 +124,7 @@ async function procesarMensaje(telefono, mensaje) {
         }
 
     } else {
-        respuesta = "🤖 *Menú del Bot:*\n\n1️⃣ Operar: `A85 50 Jhon`\n2️⃣ Ver todo: `Inventario total`\n3️⃣ Historial: `Movimientos`";
+        respuesta = "🤖 *Menú del Bot:*\n\n1️⃣ Operar: `PIÑA 50`\n2️⃣ Ver todo: `Inventario total`\n3️⃣ Historial: `Movimientos`";
     }
 
     if (!WHATSAPP_TOKEN || WHATSAPP_TOKEN === 'PENDIENTE') {
@@ -146,4 +148,3 @@ async function enviarWhatsApp(telefono, texto) {
     text: { body: texto }
   }, { headers: { 'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } });
 }
-
