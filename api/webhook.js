@@ -7,6 +7,11 @@ const CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
 const PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 
+// FUNCIÓN PARA FORMATEAR EN PESOS COLOMBIANOS
+const formatoPesos = (valor) => {
+    return "$" + Math.round(valor).toLocaleString('es-CO');
+};
+
 module.exports = async (req, res) => {
   if (req.method === 'GET') {
     if (req.query['hub.verify_token'] === 'tribu_token_seguro') return res.status(200).send(req.query['hub.challenge']);
@@ -41,7 +46,7 @@ async function procesarMensaje(telefono, mensaje) {
 
     const hojaInventario = doc.sheetsByTitle['Inventario'];
     const hojaMovimientos = doc.sheetsByTitle['Movimientos'];
-    const hojaNomina = doc.sheetsByTitle['Nomina']; // NUEVA HOJA
+    const hojaNomina = doc.sheetsByTitle['Nomina'];
 
     const filasInventario = await hojaInventario.getRows();
     const regexOperacion = /^(\S+)\s+(-?\d+)(?:\s+(.+))?$/;
@@ -83,12 +88,12 @@ async function procesarMensaje(telefono, mensaje) {
         const filaTrabajador = filasNomina.find(row => row.Trabajador && row.Trabajador.toUpperCase() === nombreTrabajador);
         
         if (filaTrabajador) {
-            const montoPagado = filaTrabajador['Saldo Acumulado'] || 0;
+            const montoPagado = parseFloat(filaTrabajador['Saldo Acumulado'] || 0);
             filaTrabajador['Saldo Acumulado'] = 0;
             filaTrabajador['Ultimo Pago'] = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' });
             await filaTrabajador.save();
             
-            respuesta = `💸 *PAGO REGISTRADO*\n------------------\nSe ha liquidado y puesto en ceros la cuenta de *${nombreTrabajador}*.\nMonto liquidado: $${montoPagado}`;
+            respuesta = `💸 *PAGO REGISTRADO*\n------------------\nSe ha liquidado y puesto en ceros la cuenta de *${nombreTrabajador}*.\nMonto liquidado: *${formatoPesos(montoPagado)}*`;
         } else {
             respuesta = `❌ No encontré saldos pendientes para el trabajador: ${nombreTrabajador}`;
         }
@@ -126,42 +131,39 @@ async function procesarMensaje(telefono, mensaje) {
                     'Telefono': telefono 
                 });
 
-                // LÓGICA DE NÓMINA (Solo aplica si hay un ingreso positivo y viene con nombres)
+                // LÓGICA DE NÓMINA
                 let detallesNomina = "";
                 if (cant > 0 && nota !== "General") {
                     const precioUnidad = parseFloat(filaEncontrada['Pago a trabajadores'] || 0);
-                    const trabajadores = nota.trim().toUpperCase().split(/\s+/); // Separa los nombres por espacios
+                    const trabajadores = nota.trim().toUpperCase().split(/\s+/); 
                     const pagoTotal = cant * precioUnidad;
                     
                     if (pagoTotal > 0 && trabajadores.length > 0) {
                         const pagoIndividual = pagoTotal / trabajadores.length;
                         const filasNomina = await hojaNomina.getRows();
 
-                        detallesNomina = `\n\n👷‍♂️ *REPORTE DE PAGO:*\n💰 Total pieza: $${precioUnidad}\n💵 Reparto ($${pagoTotal} / ${trabajadores.length}):\n`;
+                        detallesNomina = `\n\n👷‍♂️ *REPORTE DE PAGO:*\n💰 Total pieza: ${formatoPesos(precioUnidad)}\n💵 Reparto (${formatoPesos(pagoTotal)} / ${trabajadores.length}):\n`;
 
                         for (const nombre of trabajadores) {
                             let filaTrabajador = filasNomina.find(row => row.Trabajador && row.Trabajador.toUpperCase() === nombre);
                             
                             if (filaTrabajador) {
-                                // Sumar al saldo existente
                                 let saldoPrevio = parseFloat(filaTrabajador['Saldo Acumulado'] || 0);
                                 filaTrabajador['Saldo Acumulado'] = saldoPrevio + pagoIndividual;
                                 await filaTrabajador.save();
                             } else {
-                                // Crear nuevo trabajador
                                 await hojaNomina.addRow({
                                     'Trabajador': nombre,
                                     'Saldo Acumulado': pagoIndividual,
                                     'Ultimo Pago': 'Nunca'
                                 });
                             }
-                            // Formateo visual sin decimales para pesos colombianos
-                            detallesNomina += `👉 ${nombre}: +$${Math.round(pagoIndividual)}\n`;
+                            detallesNomina += `👉 ${nombre}: +*${formatoPesos(pagoIndividual)}*\n`;
                         }
                     }
                 }
 
-                // Generar Respuesta de Salida vs Entrada
+                // Generar Respuesta
                 if (cant > 0) {
                     respuesta = `✅ *PRODUCCIÓN*\nRef: ${ref}\nCant: +${cant}\nPersonal: ${nota}\n📦 Stock Final: ${nuevoSaldo}${detallesNomina}`;
                 } else {
@@ -172,7 +174,7 @@ async function procesarMensaje(telefono, mensaje) {
             respuesta = `❌ La referencia *${ref}* no existe en el inventario.`;
         }
 
-    // --- COMANDO 4: TUTORIAL DETALLADO (Si ingresan algo mal) ---
+    // --- COMANDO 4: TUTORIAL DETALLADO ---
     } else {
         respuesta = `🤖 *TUTORIAL DEL SISTEMA* 🤖\n\nNo reconocí ese comando. Aquí tienes ejemplos exactos de cómo pedirme las cosas:\n\n` +
         `🛠️ *1. Agregar Producción y calcular pago:*\nEscribe la Referencia, un espacio, la Cantidad, y los Nombres.\n👉 Ejemplo: \`A10MH 50 Jose Jaiver Jhon\`\n\n` +
