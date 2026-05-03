@@ -12,13 +12,11 @@ const formatoPesos = (valor) => {
     return "$" + Math.round(valor).toLocaleString('es-CO');
 };
 
-// NUEVA FUNCIÓN: LIMPIADOR BASTARDO DE NÚMEROS
+// FUNCIÓN: LIMPIADOR BASTARDO DE NÚMEROS
 const limpiarNumero = (valor) => {
     if (!valor) return 0;
     let str = valor.toString();
-    // Quita signos $, espacios y PUNTOS (separadores de miles en Colombia)
     str = str.replace(/\$|\s|\./g, '');
-    // Cambia la coma por punto para que JS entienda los decimales reales
     str = str.replace(',', '.');
     const num = parseFloat(str);
     return isNaN(num) ? 0 : num;
@@ -65,6 +63,7 @@ async function procesarMensaje(telefono, mensaje) {
     
     let respuesta = "";
 
+    // --- COMANDO 1: REPORTE DE INVENTARIO TOTAL ---
     if (mensaje.match(/^(inventario total|reporte|saldo)$/i)) {
         let reporte = "📦 *INVENTARIO ACTUAL*\n------------------\n";
         let totalItems = 0;
@@ -76,6 +75,7 @@ async function procesarMensaje(telefono, mensaje) {
         });
         respuesta = totalItems === 0 ? "📭 El inventario está vacío." : reporte;
 
+    // --- COMANDO 2: CONSULTAR MOVIMIENTOS ---
     } else if (mensaje.match(/^movimientos$/i)) {
         const filasMov = await hojaMovimientos.getRows();
         if (filasMov.length === 0) {
@@ -90,7 +90,32 @@ async function procesarMensaje(telefono, mensaje) {
             });
         }
 
-    // --- COMANDO DE PAGO ---
+    // --- COMANDO NUEVO: VER NÓMINA PENDIENTE ---
+    } else if (mensaje.match(/^(nomina|nómina|saldos|pagos pendientes)$/i)) {
+        const filasNomina = await hojaNomina.getRows();
+        let reporteNomina = "💸 *REPORTE DE NÓMINA PENDIENTE*\n------------------\n";
+        let totalAdeudado = 0;
+        let hayDeudas = false;
+
+        filasNomina.forEach(fila => {
+            const trabajador = fila.Trabajador;
+            const saldo = limpiarNumero(fila['Saldo Acumulado']);
+
+            if (trabajador && saldo > 0) {
+                reporteNomina += `👷‍♂️ *${trabajador}*: ${formatoPesos(saldo)}\n`;
+                totalAdeudado += saldo;
+                hayDeudas = true;
+            }
+        });
+
+        if (!hayDeudas) {
+            respuesta = "✅ *NÓMINA AL DÍA*\n------------------\nActualmente no hay saldos pendientes por pagar a ningún trabajador.";
+        } else {
+            reporteNomina += `\n💰 *TOTAL A PAGAR:* ${formatoPesos(totalAdeudado)}`;
+            respuesta = reporteNomina;
+        }
+
+    // --- COMANDO DE PAGO (LIQUIDACIÓN INDIVIDUAL) ---
     } else if (mensaje.match(/^pagar\s+(.+)$/i)) {
         const nombreTrabajador = mensaje.match(/^pagar\s+(.+)$/i)[1].trim().toUpperCase();
         const filasNomina = await hojaNomina.getRows();
@@ -98,17 +123,21 @@ async function procesarMensaje(telefono, mensaje) {
         const filaTrabajador = filasNomina.find(row => row.Trabajador && row.Trabajador.toUpperCase() === nombreTrabajador);
         
         if (filaTrabajador) {
-            // Usamos el limpiador aquí también por seguridad
             const montoPagado = limpiarNumero(filaTrabajador['Saldo Acumulado']);
-            filaTrabajador['Saldo Acumulado'] = 0;
-            filaTrabajador['Ultimo Pago'] = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' });
-            await filaTrabajador.save();
-            
-            respuesta = `💸 *PAGO REGISTRADO*\n------------------\nSe ha liquidado y puesto en ceros la cuenta de *${nombreTrabajador}*.\nMonto liquidado: *${formatoPesos(montoPagado)}*`;
+            if (montoPagado > 0) {
+                filaTrabajador['Saldo Acumulado'] = 0;
+                filaTrabajador['Ultimo Pago'] = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' });
+                await filaTrabajador.save();
+                
+                respuesta = `💸 *PAGO REGISTRADO*\n------------------\nSe ha liquidado y puesto en ceros la cuenta de *${nombreTrabajador}*.\nMonto liquidado: *${formatoPesos(montoPagado)}*`;
+            } else {
+                respuesta = `⚠️ La cuenta de *${nombreTrabajador}* ya se encuentra en ceros.`;
+            }
         } else {
-            respuesta = `❌ No encontré saldos pendientes para el trabajador: ${nombreTrabajador}`;
+            respuesta = `❌ No encontré ningún trabajador llamado: ${nombreTrabajador}`;
         }
 
+    // --- COMANDO 3: REGISTRAR ENTRADA/SALIDA Y NÓMINA ---
     } else if (mensaje.match(regexOperacion)) {
         const match = mensaje.match(regexOperacion);
         const ref = match[1].toUpperCase();     
@@ -142,7 +171,6 @@ async function procesarMensaje(telefono, mensaje) {
 
                 let detallesNomina = "";
                 if (cant > 0 && nota !== "General") {
-                    // AQUÍ APLICAMOS EL LIMPIADOR AL PRECIO
                     const precioUnidad = limpiarNumero(filaEncontrada['Pago a trabajadores']);
                     const trabajadores = nota.trim().toUpperCase().split(/\s+/); 
                     const pagoTotal = cant * precioUnidad;
@@ -157,7 +185,6 @@ async function procesarMensaje(telefono, mensaje) {
                             let filaTrabajador = filasNomina.find(row => row.Trabajador && row.Trabajador.toUpperCase() === nombre);
                             
                             if (filaTrabajador) {
-                                // AQUÍ APLICAMOS EL LIMPIADOR AL SALDO ACUMULADO
                                 let saldoPrevio = limpiarNumero(filaTrabajador['Saldo Acumulado']);
                                 filaTrabajador['Saldo Acumulado'] = saldoPrevio + pagoIndividual;
                                 await filaTrabajador.save();
@@ -183,14 +210,16 @@ async function procesarMensaje(telefono, mensaje) {
             respuesta = `❌ La referencia *${ref}* no existe en el inventario.`;
         }
 
+    // --- COMANDO 4: TUTORIAL DETALLADO ---
     } else {
         respuesta = `🤖 *TUTORIAL DEL SISTEMA* 🤖\n\nNo reconocí ese comando. Aquí tienes ejemplos exactos de cómo pedirme las cosas:\n\n` +
-        `🛠️ *1. Agregar Producción y calcular pago:*\nEscribe la Referencia, un espacio, la Cantidad, y los Nombres.\n👉 Ejemplo: \`A10MH 50 Jose Jaiver Jhon\`\n\n` +
-        `🚚 *2. Registrar una Salida/Entrega:*\nUsa el signo MENOS antes del número, seguido del destino.\n👉 Ejemplo: \`A10MH -20 ObraCentro\`\n\n` +
-        `📝 *3. Corregir un error (Reversión):*\nSi anotaste 50 por error, sácalos poniendo un menos.\n👉 Ejemplo: \`A10MH -50 CORRECCION\`\n\n` +
-        `💸 *4. Pagar la quincena a un trabajador:*\n👉 Ejemplo: \`Pagar JOSE\`\n\n` +
-        `📦 *5. Ver Inventario Completo:*\n👉 Escribe: \`Inventario total\`\n\n` +
-        `📋 *6. Ver Historial:*\n👉 Escribe: \`Movimientos\``;
+        `🛠️ *1. Agregar Producción y pago:*\n👉 Ejemplo: \`A10MH 50 Jose Jaiver Jhon\`\n\n` +
+        `🚚 *2. Registrar Entrega (con Menos):*\n👉 Ejemplo: \`A10MH -20 ObraCentro\`\n\n` +
+        `📝 *3. Corregir error (Reversión):*\n👉 Ejemplo: \`A10MH -50 CORRECCION\`\n\n` +
+        `💸 *4. Ver Nómina Pendiente:*\n👉 Escribe: \`Nomina\` (o Saldos)\n\n` +
+        `✅ *5. Pagar la quincena a un trabajador:*\n👉 Ejemplo: \`Pagar JOSE\`\n\n` +
+        `📦 *6. Ver Inventario Completo:*\n👉 Escribe: \`Inventario total\`\n\n` +
+        `📋 *7. Ver Historial de Movimientos:*\n👉 Escribe: \`Movimientos\``;
     }
 
     if (!WHATSAPP_TOKEN || WHATSAPP_TOKEN === 'PENDIENTE') {
