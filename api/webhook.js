@@ -7,9 +7,21 @@ const CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
 const PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 
-// FUNCIÓN PARA FORMATEAR EN PESOS COLOMBIANOS
+// FUNCIÓN PARA FORMATEAR EN PESOS
 const formatoPesos = (valor) => {
     return "$" + Math.round(valor).toLocaleString('es-CO');
+};
+
+// NUEVA FUNCIÓN: LIMPIADOR BASTARDO DE NÚMEROS
+const limpiarNumero = (valor) => {
+    if (!valor) return 0;
+    let str = valor.toString();
+    // Quita signos $, espacios y PUNTOS (separadores de miles en Colombia)
+    str = str.replace(/\$|\s|\./g, '');
+    // Cambia la coma por punto para que JS entienda los decimales reales
+    str = str.replace(',', '.');
+    const num = parseFloat(str);
+    return isNaN(num) ? 0 : num;
 };
 
 module.exports = async (req, res) => {
@@ -53,7 +65,6 @@ async function procesarMensaje(telefono, mensaje) {
     
     let respuesta = "";
 
-    // --- COMANDO 1: REPORTE DE INVENTARIO TOTAL ---
     if (mensaje.match(/^(inventario total|reporte|saldo)$/i)) {
         let reporte = "📦 *INVENTARIO ACTUAL*\n------------------\n";
         let totalItems = 0;
@@ -65,7 +76,6 @@ async function procesarMensaje(telefono, mensaje) {
         });
         respuesta = totalItems === 0 ? "📭 El inventario está vacío." : reporte;
 
-    // --- COMANDO 2: CONSULTAR MOVIMIENTOS ---
     } else if (mensaje.match(/^movimientos$/i)) {
         const filasMov = await hojaMovimientos.getRows();
         if (filasMov.length === 0) {
@@ -80,7 +90,7 @@ async function procesarMensaje(telefono, mensaje) {
             });
         }
 
-    // --- COMANDO NUEVO: PAGAR A TRABAJADOR ---
+    // --- COMANDO DE PAGO ---
     } else if (mensaje.match(/^pagar\s+(.+)$/i)) {
         const nombreTrabajador = mensaje.match(/^pagar\s+(.+)$/i)[1].trim().toUpperCase();
         const filasNomina = await hojaNomina.getRows();
@@ -88,7 +98,8 @@ async function procesarMensaje(telefono, mensaje) {
         const filaTrabajador = filasNomina.find(row => row.Trabajador && row.Trabajador.toUpperCase() === nombreTrabajador);
         
         if (filaTrabajador) {
-            const montoPagado = parseFloat(filaTrabajador['Saldo Acumulado'] || 0);
+            // Usamos el limpiador aquí también por seguridad
+            const montoPagado = limpiarNumero(filaTrabajador['Saldo Acumulado']);
             filaTrabajador['Saldo Acumulado'] = 0;
             filaTrabajador['Ultimo Pago'] = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' });
             await filaTrabajador.save();
@@ -98,7 +109,6 @@ async function procesarMensaje(telefono, mensaje) {
             respuesta = `❌ No encontré saldos pendientes para el trabajador: ${nombreTrabajador}`;
         }
 
-    // --- COMANDO 3: REGISTRAR ENTRADA/SALIDA Y NÓMINA ---
     } else if (mensaje.match(regexOperacion)) {
         const match = mensaje.match(regexOperacion);
         const ref = match[1].toUpperCase();     
@@ -121,7 +131,6 @@ async function procesarMensaje(telefono, mensaje) {
 
                 const tipoAccion = cant >= 0 ? 'Entrada / Producción' : 'Salida / Entrega';
                 
-                // Guardar en Historial
                 await hojaMovimientos.addRow({
                     'Fecha': new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' }),
                     'Accion': tipoAccion,
@@ -131,10 +140,10 @@ async function procesarMensaje(telefono, mensaje) {
                     'Telefono': telefono 
                 });
 
-                // LÓGICA DE NÓMINA
                 let detallesNomina = "";
                 if (cant > 0 && nota !== "General") {
-                    const precioUnidad = parseFloat(filaEncontrada['Pago a trabajadores'] || 0);
+                    // AQUÍ APLICAMOS EL LIMPIADOR AL PRECIO
+                    const precioUnidad = limpiarNumero(filaEncontrada['Pago a trabajadores']);
                     const trabajadores = nota.trim().toUpperCase().split(/\s+/); 
                     const pagoTotal = cant * precioUnidad;
                     
@@ -148,7 +157,8 @@ async function procesarMensaje(telefono, mensaje) {
                             let filaTrabajador = filasNomina.find(row => row.Trabajador && row.Trabajador.toUpperCase() === nombre);
                             
                             if (filaTrabajador) {
-                                let saldoPrevio = parseFloat(filaTrabajador['Saldo Acumulado'] || 0);
+                                // AQUÍ APLICAMOS EL LIMPIADOR AL SALDO ACUMULADO
+                                let saldoPrevio = limpiarNumero(filaTrabajador['Saldo Acumulado']);
                                 filaTrabajador['Saldo Acumulado'] = saldoPrevio + pagoIndividual;
                                 await filaTrabajador.save();
                             } else {
@@ -163,7 +173,6 @@ async function procesarMensaje(telefono, mensaje) {
                     }
                 }
 
-                // Generar Respuesta
                 if (cant > 0) {
                     respuesta = `✅ *PRODUCCIÓN*\nRef: ${ref}\nCant: +${cant}\nPersonal: ${nota}\n📦 Stock Final: ${nuevoSaldo}${detallesNomina}`;
                 } else {
@@ -174,7 +183,6 @@ async function procesarMensaje(telefono, mensaje) {
             respuesta = `❌ La referencia *${ref}* no existe en el inventario.`;
         }
 
-    // --- COMANDO 4: TUTORIAL DETALLADO ---
     } else {
         respuesta = `🤖 *TUTORIAL DEL SISTEMA* 🤖\n\nNo reconocí ese comando. Aquí tienes ejemplos exactos de cómo pedirme las cosas:\n\n` +
         `🛠️ *1. Agregar Producción y calcular pago:*\nEscribe la Referencia, un espacio, la Cantidad, y los Nombres.\n👉 Ejemplo: \`A10MH 50 Jose Jaiver Jhon\`\n\n` +
